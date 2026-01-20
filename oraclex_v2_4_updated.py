@@ -139,39 +139,50 @@ async def fetch_binance_data(session: aiohttp.ClientSession) -> Dict:
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def fetch_metals_data(session: aiohttp.ClientSession) -> Dict:
-    """Fetch XAUUSD and XAGUUSD from Metals-API"""
+    """Fetch XAUUSD and XAGUUSD from GoldAPI.io - FREE, no API key needed"""
     try:
         data = {}
         
-        for oracle_sym, metal_symbol in METAL_SYMBOLS.items():
-            try:
-                async with session.get(
-                    f"https://metals-api.com/api/latest?access_key={METALS_API_KEY}&base=USD&symbols={metal_symbol}",
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as resp:
-                    api_data = await resp.json()
-                    
-                    if api_data.get("success") and metal_symbol in api_data.get("rates", {}):
-                        # Metals API returns 1/value for USD base, so we need to invert
-                        rate = api_data["rates"][metal_symbol]
-                        price = 1 / rate  # Convert to USD per ounce
-                        
-                        data[oracle_sym] = {
-                            "price": price,
-                            "bid": price * 0.999,  # Approximate bid/ask spread
-                            "ask": price * 1.001,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                        print(f"✅ Metals {oracle_sym}: {price:.2f}")
-                    else:
-                        print(f"⚠️ Metals {oracle_sym}: API returned {api_data.get('success')} - {api_data}")
-            except Exception as e:
-                print(f"❌ Metals {oracle_sym} error: {e}")
-                continue
+        # GoldAPI.io - completely free, no API key needed
+        async with session.get(
+            "https://gold-api.com/api/goldprice/XAU,XAG",
+            timeout=aiohttp.ClientTimeout(total=5)
+        ) as resp:
+            api_data = await resp.json()
+        
+        # Process gold (XAU)
+        if api_data and isinstance(api_data, dict) and 'XAU' in api_data:
+            xau_data = api_data.get('XAU', {})
+            if 'price_oz' in xau_data:
+                xau_price = float(xau_data['price_oz'])
+                data['XAUUSD'] = {
+                    "price": xau_price,
+                    "bid": xau_price * 0.999,
+                    "ask": xau_price * 1.001,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                print(f"✅ GoldAPI XAU (Gold): ${xau_price:.2f}")
+        
+        # Process silver (XAG)
+        if api_data and isinstance(api_data, dict) and 'XAG' in api_data:
+            xag_data = api_data.get('XAG', {})
+            if 'price_oz' in xag_data:
+                xag_price = float(xag_data['price_oz'])
+                data['XAGUUSD'] = {
+                    "price": xag_price,
+                    "bid": xag_price * 0.999,
+                    "ask": xag_price * 1.001,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                print(f"✅ GoldAPI XAG (Silver): ${xag_price:.2f}")
+        
+        if not data:
+            print(f"⚠️ GoldAPI returned no valid data: {api_data}")
         
         return data
+        
     except Exception as e:
-        print(f"❌ Metals-API fetch error: {e}")
+        print(f"❌ GoldAPI fetch error: {e}")
         return {}
 
 # ═════════════════════════════════════════════════════════════════════════════
