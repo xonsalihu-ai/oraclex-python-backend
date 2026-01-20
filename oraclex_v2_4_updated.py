@@ -6,8 +6,8 @@
 ║                                                                                ║
 ║  DATA SOURCES:                                                                 ║
 ║  • Binance (BTCUSD, ETHUSD) - Every 10 seconds                                ║
-║  • Metals-API (XAUUSD, XAGUUSD) - Every 10 seconds                            ║
-║  • Finnhub (EUR/USD, GBP/USD, SPX, CCMP) - Every 30 seconds                   ║
+║  • GoldAPI (XAUUSD, XAGUUSD) - Every 10 seconds                               ║
+║  • Finnhub (EUR/USD, GBP/USD, AUD/USD, NZD/USD) - Every 30 seconds            ║
 ║                                                                                ║
 ║  FEATURES:                                                                     ║
 ║  1. Market Regime Classification                                              ║
@@ -42,7 +42,6 @@ SCAN_INTERVAL_CRYPTO = 10  # 10 seconds for fast-moving crypto
 SCAN_INTERVAL_FOREX_INDICES = 30  # 30 seconds for slower-moving forex/indices
 
 # API Keys
-METALS_API_KEY = os.getenv("METALS_API_KEY")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 
 # Symbol mappings
@@ -59,8 +58,8 @@ METAL_SYMBOLS = {
 FOREX_INDICES_SYMBOLS = {
     "EURUSD": "EURUSD",
     "GBPUSD": "GBPUSD",
-    "SPX": "SPX",      # S&P 500 - use ticker directly
-    "CCMP": "CCMP"     # Nasdaq 100 - use ticker directly
+    "AUDUSD": "AUDUSD",
+    "NZDUSD": "NZDUSD"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -74,8 +73,8 @@ market_data = {
     "XAGUUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
     "EURUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
     "GBPUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
-    "SPX": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
-    "CCMP": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
+    "AUDUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
+    "NZDUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
 }
 
 context_history = {sym: deque(maxlen=90) for sym in market_data.keys()}  # 90 data points
@@ -478,8 +477,8 @@ async def main():
     print("🔥 ORACLEX V2.4 - PRODUCTION BACKEND - LIVE!")
     print("=" * 80)
     print("✓ Binance (BTCUSD, ETHUSD) - Every 10 seconds")
-    print("✓ Metals-API (XAUUSD, XAGUUSD) - Every 10 seconds")
-    print("✓ Finnhub (EUR/USD, GBP/USD, SPX, CCMP) - Every 30 seconds")
+    print("✓ GoldAPI (XAUUSD, XAGUUSD) - Every 10 seconds")
+    print("✓ Finnhub (EURUSD, GBPUSD, AUDUSD, NZDUSD) - Every 30 seconds")
     print("=" * 80)
     print()
     
