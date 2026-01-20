@@ -43,6 +43,7 @@ SCAN_INTERVAL_FOREX_INDICES = 30  # 30 seconds for slower-moving forex/indices
 
 # API Keys
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+APININJAS_API_KEY = os.getenv("APININJAS_API_KEY", "")  # Optional, but API Ninjas doesn't require it
 
 # Symbol mappings
 CRYPTO_SYMBOLS = {
@@ -55,7 +56,7 @@ METAL_SYMBOLS = {
     "XAGUUSD": "XAG"   # Silver
 }
 
-FOREX_INDICES_SYMBOLS = {
+FOREX_SYMBOLS = {
     "EURUSD": "EURUSD",
     "GBPUSD": "GBPUSD",
     "AUDUSD": "AUDUSD",
