@@ -373,12 +373,18 @@ async def update_all_pairs(session: aiohttp.ClientSession, update_forex_indices:
     analysis_data = []
     
     for symbol, data in market_data.items():
-        if data["current"] is None and symbol not in crypto_data and symbol not in metals_data:
+        # Get current data from appropriate source
+        if symbol in crypto_data:
+            current = crypto_data.get(symbol)
+        elif symbol in metals_data:
+            current = metals_data.get(symbol)
+        elif update_forex_indices and symbol in forex_data:
+            current = forex_data.get(symbol)
+        else:
             continue
         
         # Get or create candles dataframe
-        if symbol in crypto_data or symbol in metals_data or (update_forex_indices and symbol in forex_data):
-            current = crypto_data.get(symbol) or metals_data.get(symbol) or (forex_data.get(symbol) if update_forex_indices else {})
+        if current:
             
             if current and "candles" in current:
                 candles = current["candles"]
