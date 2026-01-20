@@ -18,7 +18,7 @@ Real-time market analysis engine with dashboard features.
 Add these in Railway Project Settings:
 
 ```
-GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_API_KEY=AIzaSyCx8nWHF7cWrCIU8T7jqgw9Q1pAKZkVCpA
 ```
 
 ### How It Works
