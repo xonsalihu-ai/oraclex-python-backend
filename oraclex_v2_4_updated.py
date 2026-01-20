@@ -6,7 +6,7 @@
 ║                                                                                ║
 ║  DATA SOURCES:                                                                 ║
 ║  • Binance (BTCUSD, ETHUSD) - Every 10 seconds                                ║
-║  • GoldAPI (XAUUSD, XAGUUSD) - Every 10 seconds                               ║
+║  • API Ninjas (XAUUSD, XAGUUSD) - Every 10 seconds                            ║
 ║  • Finnhub (EUR/USD, GBP/USD, AUD/USD, NZD/USD) - Every 30 seconds            ║
 ║                                                                                ║
 ║  FEATURES:                                                                     ║
@@ -138,43 +138,56 @@ async def fetch_binance_data(session: aiohttp.ClientSession) -> Dict:
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def fetch_metals_data(session: aiohttp.ClientSession) -> Dict:
-    """Fetch XAUUSD and XAGUUSD from GoldAPI.io - FREE, no API key needed"""
+    """Fetch XAUUSD and XAGUUSD from API Ninjas - FREE, no API key needed"""
     try:
         data = {}
         
-        # GoldAPI.io - completely free, no API key needed
-        # Using individual endpoints for each metal
-        for oracle_sym, metal_symbol in METAL_SYMBOLS.items():
-            try:
-                async with session.get(
-                    f"https://gold-api.com/api/goldprice/{metal_symbol}",
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as resp:
-                    api_data = await resp.json()
-                
-                # GoldAPI returns price_oz for ounce price
-                if api_data and 'price_oz' in api_data:
-                    price = float(api_data['price_oz'])
-                    data[oracle_sym] = {
-                        "price": price,
-                        "bid": price * 0.999,
-                        "ask": price * 1.001,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                    print(f"✅ GoldAPI {oracle_sym}: ${price:.2f}")
-                else:
-                    print(f"⚠️ GoldAPI {oracle_sym}: No price_oz in response - {api_data}")
-            except Exception as e:
-                print(f"❌ GoldAPI {oracle_sym} error: {e}")
-                continue
+        # Use API Ninjas Gold Price API - completely free
+        async with session.get(
+            "https://api.api-ninjas.com/v1/goldprice",
+            timeout=aiohttp.ClientTimeout(total=5)
+        ) as resp:
+            api_data = await resp.json()
+        
+        # API Ninjas returns price_usd_per_oz for gold
+        if api_data and 'price_usd_per_oz' in api_data:
+            xau_price = float(api_data['price_usd_per_oz'])
+            data['XAUUSD'] = {
+                "price": xau_price,
+                "bid": xau_price * 0.999,
+                "ask": xau_price * 1.001,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            print(f"✅ API Ninjas XAU (Gold): ${xau_price:.2f}")
+        else:
+            print(f"⚠️ API Ninjas: No gold price data - {api_data}")
+        
+        # Silver from same API
+        async with session.get(
+            "https://api.api-ninjas.com/v1/goldprice?metals=silver",
+            timeout=aiohttp.ClientTimeout(total=5)
+        ) as resp:
+            silver_data = await resp.json()
+        
+        if silver_data and 'price_usd_per_oz' in silver_data:
+            xag_price = float(silver_data['price_usd_per_oz'])
+            data['XAGUUSD'] = {
+                "price": xag_price,
+                "bid": xag_price * 0.999,
+                "ask": xag_price * 1.001,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            print(f"✅ API Ninjas XAG (Silver): ${xag_price:.2f}")
+        else:
+            print(f"⚠️ API Ninjas: No silver price data - {silver_data}")
         
         if not data:
-            print(f"⚠️ GoldAPI: No data returned")
+            print(f"⚠️ API Ninjas: No precious metals data returned")
         
         return data
         
     except Exception as e:
-        print(f"❌ GoldAPI fetch error: {e}")
+        print(f"❌ API Ninjas fetch error: {e}")
         return {}
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -491,7 +504,7 @@ async def main():
     print("🔥 ORACLEX V2.4 - PRODUCTION BACKEND - LIVE!")
     print("=" * 80)
     print("✓ Binance (BTCUSD, ETHUSD) - Every 10 seconds")
-    print("✓ GoldAPI (XAUUSD, XAGUUSD) - Every 10 seconds")
+    print("✓ API Ninjas (XAUUSD, XAGUUSD) - Every 10 seconds")
     print("✓ Finnhub (EURUSD, GBPUSD, AUDUSD, NZDUSD) - Every 30 seconds")
     print("=" * 80)
     print()
