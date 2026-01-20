@@ -59,8 +59,8 @@ METAL_SYMBOLS = {
 FOREX_INDICES_SYMBOLS = {
     "EURUSD": "EURUSD",
     "GBPUSD": "GBPUSD",
-    "SPX": "^GSPC",  # S&P 500
-    "CCMP": "^IXIC"   # Nasdaq 100
+    "SPX": "SPX",      # S&P 500 - use ticker directly
+    "CCMP": "CCMP"     # Nasdaq 100 - use ticker directly
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -144,27 +144,34 @@ async def fetch_metals_data(session: aiohttp.ClientSession) -> Dict:
         data = {}
         
         for oracle_sym, metal_symbol in METAL_SYMBOLS.items():
-            async with session.get(
-                f"https://metals-api.com/api/latest?access_key={METALS_API_KEY}&base=USD&symbols={metal_symbol}",
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as resp:
-                api_data = await resp.json()
-                
-                if api_data["success"]:
-                    # Metals API returns 1/value for USD base, so we need to invert
-                    rate = api_data["rates"][metal_symbol]
-                    price = 1 / rate  # Convert to USD per ounce
+            try:
+                async with session.get(
+                    f"https://metals-api.com/api/latest?access_key={METALS_API_KEY}&base=USD&symbols={metal_symbol}",
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    api_data = await resp.json()
                     
-                    data[oracle_sym] = {
-                        "price": price,
-                        "bid": price * 0.999,  # Approximate bid/ask spread
-                        "ask": price * 1.001,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
+                    if api_data.get("success") and metal_symbol in api_data.get("rates", {}):
+                        # Metals API returns 1/value for USD base, so we need to invert
+                        rate = api_data["rates"][metal_symbol]
+                        price = 1 / rate  # Convert to USD per ounce
+                        
+                        data[oracle_sym] = {
+                            "price": price,
+                            "bid": price * 0.999,  # Approximate bid/ask spread
+                            "ask": price * 1.001,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        print(f"✅ Metals {oracle_sym}: {price:.2f}")
+                    else:
+                        print(f"⚠️ Metals {oracle_sym}: API returned {api_data.get('success')} - {api_data}")
+            except Exception as e:
+                print(f"❌ Metals {oracle_sym} error: {e}")
+                continue
         
         return data
     except Exception as e:
-        print(f"❌ Metals-API error: {e}")
+        print(f"❌ Metals-API fetch error: {e}")
         return {}
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -177,45 +184,58 @@ async def fetch_finnhub_data(session: aiohttp.ClientSession) -> Dict:
         data = {}
         
         for oracle_sym, finnhub_sym in FOREX_INDICES_SYMBOLS.items():
-            # Get current quote
-            async with session.get(
-                f"https://finnhub.io/api/v1/quote?symbol={finnhub_sym}&token={FINNHUB_API_KEY}",
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as resp:
-                quote_data = await resp.json()
-            
-            # Get candles (daily for indices, 1-min for forex)
-            resolution = "1" if oracle_sym in ["EURUSD", "GBPUSD"] else "D"
-            from_time = int((datetime.now(timezone.utc) - timedelta(days=365)).timestamp())
-            to_time = int(datetime.now(timezone.utc).timestamp())
-            
-            async with session.get(
-                f"https://finnhub.io/api/v1/stock/candle?symbol={finnhub_sym}&resolution={resolution}&from={from_time}&to={to_time}&token={FINNHUB_API_KEY}",
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as resp:
-                candle_data = await resp.json()
-            
-            if "c" in candle_data:  # Check if data exists
-                data[oracle_sym] = {
-                    "price": quote_data.get("c", 0),
-                    "bid": quote_data.get("c", 0) * 0.9999,
-                    "ask": quote_data.get("c", 0) * 1.0001,
-                    "candles": [
-                        {
-                            "time": int(candle_data["t"][i] * 1000),
-                            "o": candle_data["o"][i],
-                            "h": candle_data["h"][i],
-                            "l": candle_data["l"][i],
-                            "c": candle_data["c"][i],
-                            "v": candle_data["v"][i] if "v" in candle_data else 0
-                        }
-                        for i in range(len(candle_data["c"]))
-                    ][-200:]  # Keep last 200 candles
-                }
+            try:
+                # Get current quote
+                async with session.get(
+                    f"https://finnhub.io/api/v1/quote?symbol={finnhub_sym}&token={FINNHUB_API_KEY}",
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    quote_data = await resp.json()
+                
+                # Check if we got valid data
+                if 'c' not in quote_data:
+                    print(f"⚠️ Finnhub {oracle_sym}: No price data - {quote_data}")
+                    continue
+                
+                # Get candles (daily for indices, 1-min for forex)
+                resolution = "1" if oracle_sym in ["EURUSD", "GBPUSD"] else "D"
+                from_time = int((datetime.now(timezone.utc) - timedelta(days=365)).timestamp())
+                to_time = int(datetime.now(timezone.utc).timestamp())
+                
+                async with session.get(
+                    f"https://finnhub.io/api/v1/stock/candle?symbol={finnhub_sym}&resolution={resolution}&from={from_time}&to={to_time}&token={FINNHUB_API_KEY}",
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    candle_data = await resp.json()
+                
+                if "c" in candle_data and len(candle_data["c"]) > 0:
+                    data[oracle_sym] = {
+                        "price": quote_data.get("c", 0),
+                        "bid": quote_data.get("c", 0) * 0.9999,
+                        "ask": quote_data.get("c", 0) * 1.0001,
+                        "candles": [
+                            {
+                                "time": int(candle_data["t"][i] * 1000),
+                                "o": candle_data["o"][i],
+                                "h": candle_data["h"][i],
+                                "l": candle_data["l"][i],
+                                "c": candle_data["c"][i],
+                                "v": candle_data["v"][i] if "v" in candle_data else 0
+                            }
+                            for i in range(len(candle_data["c"]))
+                        ][-200:]
+                    }
+                    print(f"✅ Finnhub {oracle_sym}: {data[oracle_sym]['price']}")
+                else:
+                    print(f"⚠️ Finnhub {oracle_sym}: No candle data")
+                    
+            except Exception as e:
+                print(f"❌ Finnhub {oracle_sym} error: {e}")
+                continue
         
         return data
     except Exception as e:
-        print(f"❌ Finnhub error: {e}")
+        print(f"❌ Finnhub fetch error: {e}")
         return {}
 
 # ═════════════════════════════════════════════════════════════════════════════
