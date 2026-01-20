@@ -143,40 +143,33 @@ async def fetch_metals_data(session: aiohttp.ClientSession) -> Dict:
         data = {}
         
         # GoldAPI.io - completely free, no API key needed
-        async with session.get(
-            "https://gold-api.com/api/goldprice/XAU,XAG",
-            timeout=aiohttp.ClientTimeout(total=5)
-        ) as resp:
-            api_data = await resp.json()
-        
-        # Process gold (XAU)
-        if api_data and isinstance(api_data, dict) and 'XAU' in api_data:
-            xau_data = api_data.get('XAU', {})
-            if 'price_oz' in xau_data:
-                xau_price = float(xau_data['price_oz'])
-                data['XAUUSD'] = {
-                    "price": xau_price,
-                    "bid": xau_price * 0.999,
-                    "ask": xau_price * 1.001,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-                print(f"✅ GoldAPI XAU (Gold): ${xau_price:.2f}")
-        
-        # Process silver (XAG)
-        if api_data and isinstance(api_data, dict) and 'XAG' in api_data:
-            xag_data = api_data.get('XAG', {})
-            if 'price_oz' in xag_data:
-                xag_price = float(xag_data['price_oz'])
-                data['XAGUUSD'] = {
-                    "price": xag_price,
-                    "bid": xag_price * 0.999,
-                    "ask": xag_price * 1.001,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-                print(f"✅ GoldAPI XAG (Silver): ${xag_price:.2f}")
+        # Using individual endpoints for each metal
+        for oracle_sym, metal_symbol in METAL_SYMBOLS.items():
+            try:
+                async with session.get(
+                    f"https://gold-api.com/api/goldprice/{metal_symbol}",
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    api_data = await resp.json()
+                
+                # GoldAPI returns price_oz for ounce price
+                if api_data and 'price_oz' in api_data:
+                    price = float(api_data['price_oz'])
+                    data[oracle_sym] = {
+                        "price": price,
+                        "bid": price * 0.999,
+                        "ask": price * 1.001,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    print(f"✅ GoldAPI {oracle_sym}: ${price:.2f}")
+                else:
+                    print(f"⚠️ GoldAPI {oracle_sym}: No price_oz in response - {api_data}")
+            except Exception as e:
+                print(f"❌ GoldAPI {oracle_sym} error: {e}")
+                continue
         
         if not data:
-            print(f"⚠️ GoldAPI returned no valid data: {api_data}")
+            print(f"⚠️ GoldAPI: No data returned")
         
         return data
         
@@ -189,59 +182,80 @@ async def fetch_metals_data(session: aiohttp.ClientSession) -> Dict:
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def fetch_finnhub_data(session: aiohttp.ClientSession) -> Dict:
-    """Fetch forex and indices from Finnhub"""
+    """Fetch forex candles from Finnhub"""
     try:
         data = {}
         
-        for oracle_sym, finnhub_sym in FOREX_INDICES_SYMBOLS.items():
+        for oracle_sym, finnhub_sym in FOREX_SYMBOLS.items():
             try:
-                # Get current quote
+                # Get current quote first
                 async with session.get(
                     f"https://finnhub.io/api/v1/quote?symbol={finnhub_sym}&token={FINNHUB_API_KEY}",
                     timeout=aiohttp.ClientTimeout(total=5)
                 ) as resp:
                     quote_data = await resp.json()
                 
-                # Check if we got valid data
                 if 'c' not in quote_data:
-                    print(f"⚠️ Finnhub {oracle_sym}: No price data - {quote_data}")
+                    print(f"⚠️ Finnhub {oracle_sym}: No quote - {quote_data}")
                     continue
                 
-                # Get candles (daily for indices, 1-min for forex)
-                resolution = "1" if oracle_sym in ["EURUSD", "GBPUSD"] else "D"
-                from_time = int((datetime.now(timezone.utc) - timedelta(days=365)).timestamp())
-                to_time = int(datetime.now(timezone.utc).timestamp())
+                current_price = quote_data.get('c', 0)
                 
-                async with session.get(
-                    f"https://finnhub.io/api/v1/stock/candle?symbol={finnhub_sym}&resolution={resolution}&from={from_time}&to={to_time}&token={FINNHUB_API_KEY}",
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as resp:
-                    candle_data = await resp.json()
-                
-                if "c" in candle_data and len(candle_data["c"]) > 0:
+                # Try to get forex candles
+                try:
+                    from_time = int((datetime.now(timezone.utc) - timedelta(days=30)).timestamp())
+                    to_time = int(datetime.now(timezone.utc).timestamp())
+                    
+                    async with session.get(
+                        f"https://finnhub.io/api/v1/forex/candle?symbol={finnhub_sym}&resolution=D&from={from_time}&to={to_time}&token={FINNHUB_API_KEY}",
+                        timeout=aiohttp.ClientTimeout(total=5)
+                    ) as resp:
+                        candle_data = await resp.json()
+                    
+                    if "c" in candle_data and len(candle_data.get("c", [])) > 0:
+                        data[oracle_sym] = {
+                            "price": current_price,
+                            "bid": current_price * 0.9999,
+                            "ask": current_price * 1.0001,
+                            "candles": [
+                                {
+                                    "time": int(candle_data["t"][i] * 1000),
+                                    "o": candle_data["o"][i],
+                                    "h": candle_data["h"][i],
+                                    "l": candle_data["l"][i],
+                                    "c": candle_data["c"][i],
+                                    "v": candle_data["v"][i] if "v" in candle_data else 0
+                                }
+                                for i in range(len(candle_data["c"]))
+                            ][-200:]
+                        }
+                        print(f"✅ Finnhub {oracle_sym}: ${current_price} + candles")
+                    else:
+                        # No candles available, use quote only
+                        data[oracle_sym] = {
+                            "price": current_price,
+                            "bid": current_price * 0.9999,
+                            "ask": current_price * 1.0001,
+                            "candles": []
+                        }
+                        print(f"⚠️ Finnhub {oracle_sym}: ${current_price} (no candles)")
+                        
+                except Exception as candle_err:
+                    # Candle failed, use quote
                     data[oracle_sym] = {
-                        "price": quote_data.get("c", 0),
-                        "bid": quote_data.get("c", 0) * 0.9999,
-                        "ask": quote_data.get("c", 0) * 1.0001,
-                        "candles": [
-                            {
-                                "time": int(candle_data["t"][i] * 1000),
-                                "o": candle_data["o"][i],
-                                "h": candle_data["h"][i],
-                                "l": candle_data["l"][i],
-                                "c": candle_data["c"][i],
-                                "v": candle_data["v"][i] if "v" in candle_data else 0
-                            }
-                            for i in range(len(candle_data["c"]))
-                        ][-200:]
+                        "price": current_price,
+                        "bid": current_price * 0.9999,
+                        "ask": current_price * 1.0001,
+                        "candles": []
                     }
-                    print(f"✅ Finnhub {oracle_sym}: {data[oracle_sym]['price']}")
-                else:
-                    print(f"⚠️ Finnhub {oracle_sym}: No candle data")
+                    print(f"⚠️ Finnhub {oracle_sym}: Quote only - candle error: {type(candle_err).__name__}")
                     
             except Exception as e:
                 print(f"❌ Finnhub {oracle_sym} error: {e}")
                 continue
+        
+        if data:
+            print(f"✅ Finnhub: {len(data)} pairs")
         
         return data
     except Exception as e:
