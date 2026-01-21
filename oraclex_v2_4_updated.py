@@ -84,8 +84,9 @@ async def get_symbol_analysis(request):
 async def main():
     app = web.Application()
     
-    # Routes
+    # Routes - both /market-data and /market-data-v1.6 point to same handler
     app.router.add_get("/", health)
+    app.router.add_post("/market-data", receive_market_data)
     app.router.add_post("/market-data-v1.6", receive_market_data)
     app.router.add_get("/latest-analysis", get_all_analysis)
     app.router.add_get("/analysis/{symbol}", get_symbol_analysis)
