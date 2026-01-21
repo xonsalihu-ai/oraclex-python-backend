@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ORACLEX V2.5+ WITH GEMINI - INSTITUTIONAL GRADE MARKET ANALYSIS
-Combines quantitative analysis with Gemini AI for deeper insights
+ORACLEX V2.5+ - INSTITUTIONAL GRADE MARKET ANALYSIS
+No Gemini - Pure working version
 """
 
 from aiohttp import web
@@ -9,52 +9,13 @@ import pandas as pd
 import numpy as np
 import json
 from datetime import datetime
-import os
-import sys
-import asyncio
-
-# Import Gemini
-import google.generativeai as genai
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
 
 SYMBOLS = ['XAUUSD', 'XAGUUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'GBPUSD', 'AUDUSD', 'NZDUSD']
-TIMEFRAMES = ['M1', 'M5', 'M15', 'H1', 'H4', 'D1', 'W1']
-
-# Gemini setup
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-pro')
-else:
-    print("⚠️  GEMINI_API_KEY not set - Gemini features disabled")
-    model = None
-
-# ============================================================================
-# GLOBAL STATE
-# ============================================================================
-
 market_cache = {}
 
-# ============================================================================
-# ANALYSIS ENGINE
-# ============================================================================
-
 class OracleXAnalyzer:
-    """Institutional grade market analysis with Gemini integration"""
-    
-    def __init__(self):
-        self.cache = {}
-        self.model = model
-    
-    # ========================================================================
-    # 1. MULTI-TIMEFRAME ANALYSIS
-    # ========================================================================
     
     def calculate_multi_timeframe_confluence(self, symbol, timeframes_data):
-        """Analyze confluence across all timeframes"""
         if not timeframes_data:
             return {'dominant_tf': 'Unknown', 'agreement_score': 0, 'timeframe_bias': {}}
         
@@ -81,8 +42,7 @@ class OracleXAnalyzer:
             else:
                 bearish_count += 1
         
-        # Determine dominant TF
-        dominant_tf = 'H1' if 'H1' in timeframes_data else ('H4' if 'H4' in timeframes_data else list(timeframe_biases.keys())[0] if timeframe_biases else 'Unknown')
+        dominant_tf = 'H1' if 'H1' in timeframes_data else 'H4' if 'H4' in timeframes_data else (list(timeframe_biases.keys())[0] if timeframe_biases else 'Unknown')
         total_tfs = len(timeframe_biases)
         agreement_score = (max(bullish_count, bearish_count) / total_tfs * 100) if total_tfs > 0 else 0
         
@@ -95,16 +55,10 @@ class OracleXAnalyzer:
             'total_tfs': total_tfs
         }
     
-    # ========================================================================
-    # 2. LIQUIDITY HEATMAP
-    # ========================================================================
-    
     def calculate_liquidity_levels(self, symbol, market_data):
-        """Identify key support/resistance and order clustering"""
         if not market_data or 'timeframes' not in market_data:
             return {'levels': [], 'support': [], 'resistance': []}
         
-        current_price = market_data.get('price', 0)
         levels = []
         
         for tf_name, tf_data in market_data['timeframes'].items():
@@ -120,9 +74,9 @@ class OracleXAnalyzer:
                 low = candle.get('l', 0)
                 
                 if high > 0:
-                    levels.append({'price': high, 'type': 'resistance', 'tf': tf_name, 'strength': 'high' if high == max([c.get('h', 0) for c in candles[-20:]]) else 'normal'})
+                    levels.append({'price': high, 'type': 'resistance', 'tf': tf_name, 'strength': 'high'})
                 if low > 0:
-                    levels.append({'price': low, 'type': 'support', 'tf': tf_name, 'strength': 'high' if low == min([c.get('l', 0) for c in candles[-20:]]) else 'normal'})
+                    levels.append({'price': low, 'type': 'support', 'tf': tf_name, 'strength': 'high'})
         
         support_levels = sorted([l for l in levels if l['type'] == 'support'], key=lambda x: x['price'], reverse=True)
         resistance_levels = sorted([l for l in levels if l['type'] == 'resistance'], key=lambda x: x['price'])
@@ -135,12 +89,7 @@ class OracleXAnalyzer:
             'nearest_resistance': resistance_levels[0] if resistance_levels else None
         }
     
-    # ========================================================================
-    # 3. MICROSTRUCTURE ANALYSIS
-    # ========================================================================
-    
     def calculate_microstructure(self, symbol, market_data):
-        """Bid/Ask dynamics analysis"""
         bid = market_data.get('bid', 0)
         ask = market_data.get('ask', 0)
         spread_points = market_data.get('spread_points', 0)
@@ -158,17 +107,12 @@ class OracleXAnalyzer:
             'interpretation': 'Tight spread - liquidity present' if spread_pct < 0.05 else 'Wide spread - low liquidity'
         }
     
-    # ========================================================================
-    # 4. RISK/OPPORTUNITY SCORING
-    # ========================================================================
-    
     def calculate_risk_opportunity(self, symbol, confluence_score, volatility_regime, microstructure):
-        """Institutional risk/opportunity grades"""
         spread_risk = min(microstructure.get('spread_pct', 0) * 20, 30)
         volatility_risk = volatility_regime.get('volatility_points', 50)
         risk_score = min(spread_risk + volatility_risk, 100)
         
-        opportunity_score = min(confluence_score * 1.0, 100)
+        opportunity_score = min(confluence_score, 100)
         overall_score = min(max((opportunity_score - (risk_score / 2)) / 1.5, 0), 100)
         
         if overall_score >= 80:
@@ -190,12 +134,7 @@ class OracleXAnalyzer:
             'risk_level': 'Low' if risk_score < 33 else 'Medium' if risk_score < 66 else 'High'
         }
     
-    # ========================================================================
-    # 5. MARKET REGIME
-    # ========================================================================
-    
     def calculate_market_regime(self, symbol, market_data):
-        """Enhanced market regime detection"""
         timeframes = market_data.get('timeframes', {})
         
         if not timeframes or 'H1' not in timeframes:
@@ -211,7 +150,7 @@ class OracleXAnalyzer:
         trend = 'Strong Up' if recent.get('c', 0) > recent.get('ema_20', 0) else 'Strong Down'
         
         atr = h1_data.get('indicators', {}).get('atr', 0)
-        atr_mean = np.mean([c.get('h', 0) - c.get('l', 0) for c in candles[-20:]])
+        atr_mean = np.mean([max(0.0001, c.get('h', 0) - c.get('l', 0)) for c in candles[-20:]])
         
         if atr > atr_mean * 1.5:
             volatility, volatility_points = 'Extreme', 80
@@ -226,12 +165,7 @@ class OracleXAnalyzer:
         
         return {'trend': trend, 'volatility': volatility, 'structure': structure, 'volatility_points': volatility_points}
     
-    # ========================================================================
-    # 6. BIAS STABILITY
-    # ========================================================================
-    
     def calculate_bias_stability(self, symbol, market_data):
-        """Enhanced with multi-TF confluence"""
         timeframes = market_data.get('timeframes', {})
         
         if not timeframes or 'M5' not in timeframes:
@@ -264,12 +198,7 @@ class OracleXAnalyzer:
         
         return {'bias': bias, 'active_since_minutes': active_since_minutes, 'multi_tf_agreement': multi_tf_agreement, 'flip_probability': flip_probability}
     
-    # ========================================================================
-    # 7. DYNAMIC CONFLUENCE
-    # ========================================================================
-    
     def calculate_dynamic_confluence(self, symbol, market_data):
-        """Enhanced multi-timeframe confluence"""
         timeframes = market_data.get('timeframes', {})
         confluence_points = 0
         total_indicators = 0
@@ -280,6 +209,7 @@ class OracleXAnalyzer:
                 continue
             
             indicators = tf_data.get('indicators', {})
+            recent = candles[-1]
             
             rsi = indicators.get('rsi', 50)
             if rsi > 60 or rsi < 40:
@@ -291,7 +221,6 @@ class OracleXAnalyzer:
                 confluence_points += 1
             total_indicators += 1
             
-            recent = candles[-1]
             if recent.get('c', 0) > recent.get('ema_20', 0):
                 confluence_points += 1
             total_indicators += 1
@@ -300,12 +229,7 @@ class OracleXAnalyzer:
         
         return {'confluence_score': confluence_score, 'confluence_points': confluence_points, 'total_indicators': total_indicators}
     
-    # ========================================================================
-    # 8. SESSION INTELLIGENCE
-    # ========================================================================
-    
     def get_session_intelligence(self, symbol):
-        """Session volatility ranking"""
         from datetime import datetime, timezone
         
         utc_hour = datetime.now(timezone.utc).hour
@@ -328,61 +252,7 @@ class OracleXAnalyzer:
         
         return {'current_session': session, 'typical_volatility': volatility, 'session_hours': sessions_map.get(session)}
     
-    # ========================================================================
-    # GEMINI ANALYSIS
-    # ========================================================================
-    
-    async def generate_gemini_interpretation(self, symbol, analysis_data):
-        """Generate AI-powered market interpretation with Gemini"""
-        if not self.model:
-            return self._generate_fallback_interpretation(symbol, analysis_data)
-        
-        try:
-            confluence = analysis_data.get('confluence_score', 0)
-            confidence = analysis_data.get('confidence_level', 0)
-            bias = analysis_data.get('bias_stability', {}).get('bias', 'NEUTRAL')
-            regime = analysis_data.get('market_regime', {})
-            liquidity = analysis_data.get('liquidity', {})
-            microstructure = analysis_data.get('microstructure', {})
-            risk_opp = analysis_data.get('risk_opportunity', {})
-            
-            prompt = f"""
-Analyze {symbol} market data and provide a professional trading perspective:
-
-MARKET STRUCTURE:
-- Price: ${analysis_data.get('price', 0)}
-- Bias: {bias}
-- Confluence: {confluence:.1f}%
-- Market Regime: {regime.get('trend')} trend, {regime.get('volatility')} volatility
-- Structure: {regime.get('structure')}
-
-TECHNICAL SETUP:
-- Confluence Score: {confluence:.0f}%
-- Confidence Level: {confidence:.0f}%
-- Risk Grade: {risk_opp.get('grade')}
-- Risk Score: {risk_opp.get('risk_score'):.0f}/100
-
-LIQUIDITY & EXECUTION:
-- Spread: {microstructure.get('spread_pct', 0):.3f}%
-- Nearest Support: ${liquidity.get('nearest_support', {}).get('price', 'N/A')}
-- Nearest Resistance: ${liquidity.get('nearest_resistance', {}).get('price', 'N/A')}
-
-Provide:
-1. Market interpretation (1-2 sentences)
-2. Setup description (what's happening, what to watch)
-3. Trading context (risk/reward, confluencing factors)
-
-Be concise, professional, institutional-grade analysis. Focus on setup clarity and confluence strength.
-"""
-            
-            response = await asyncio.to_thread(lambda: self.model.generate_content(prompt))
-            return response.text
-        except Exception as e:
-            print(f"Gemini error: {e}")
-            return self._generate_fallback_interpretation(symbol, analysis_data)
-    
-    def _generate_fallback_interpretation(self, symbol, analysis_data):
-        """Fallback interpretation when Gemini unavailable"""
+    def generate_interpretation(self, symbol, analysis_data):
         confluence = analysis_data.get('confluence_score', 0)
         confidence = analysis_data.get('confidence_level', 0)
         bias = analysis_data.get('bias_stability', {}).get('bias', 'NEUTRAL')
@@ -395,14 +265,9 @@ Be concise, professional, institutional-grade analysis. Focus on setup clarity a
         
         return interpretation
 
-# ============================================================================
-# AIOHTTP HANDLERS
-# ============================================================================
-
 analyzer = OracleXAnalyzer()
 
 async def handle_market_data(request):
-    """Receive market data from Relay"""
     try:
         data = await request.json()
         market_data_list = data.get('market_data', [])
@@ -417,7 +282,6 @@ async def handle_market_data(request):
         return web.json_response({'error': str(e)}, status=400)
 
 async def handle_analysis(request):
-    """Get analysis for specific symbol"""
     try:
         symbol = request.match_info.get('symbol', '').upper()
         
@@ -438,7 +302,6 @@ async def handle_analysis(request):
         
         confidence_level = (multi_tf.get('agreement_score', 0) + confluence.get('confluence_score', 0)) / 2
         
-        # Generate Gemini interpretation
         analysis_data = {
             'price': market_data.get('price', 0),
             'confluence_score': confluence.get('confluence_score', 0),
@@ -450,11 +313,13 @@ async def handle_analysis(request):
             'risk_opportunity': risk_opp
         }
         
-        gemini_interpretation = await analyzer.generate_gemini_interpretation(symbol, analysis_data)
+        interpretation = analyzer.generate_interpretation(symbol, analysis_data)
         
         analysis = {
             'symbol': symbol,
             'price': market_data.get('price', 0),
+            'bid': market_data.get('bid', 0),
+            'ask': market_data.get('ask', 0),
             'bias': bias.get('bias'),
             'confluence': confluence.get('confluence_score', 0),
             'confidence': confidence_level,
@@ -465,7 +330,7 @@ async def handle_analysis(request):
             'microstructure': microstructure,
             'risk_opportunity': risk_opp,
             'session': session,
-            'interpretation': gemini_interpretation
+            'interpretation': interpretation
         }
         
         return web.json_response(analysis)
@@ -473,7 +338,6 @@ async def handle_analysis(request):
         return web.json_response({'error': str(e)}, status=500)
 
 async def handle_latest_analysis(request):
-    """Get analysis for all symbols"""
     try:
         analyses = []
         
@@ -497,12 +361,7 @@ async def handle_latest_analysis(request):
         return web.json_response({'error': str(e)}, status=500)
 
 async def handle_health(request):
-    """Health check"""
-    return web.json_response({'status': 'OK', 'cached_symbols': list(market_cache.keys()), 'gemini_enabled': bool(model), 'timestamp': datetime.now().isoformat()})
-
-# ============================================================================
-# STARTUP
-# ============================================================================
+    return web.json_response({'status': 'OK', 'cached_symbols': list(market_cache.keys()), 'timestamp': datetime.now().isoformat()})
 
 app = web.Application()
 app.router.add_post('/market-data-v1.6', handle_market_data)
@@ -512,21 +371,9 @@ app.router.add_get('/', handle_health)
 
 if __name__ == '__main__':
     print('\n' + '='*80)
-    print('✨ ORACLEX V2.5+ WITH GEMINI - INSTITUTIONAL BACKEND')
+    print('✨ ORACLEX V2.5+ - INSTITUTIONAL BACKEND')
     print('='*80)
-    print(f'   Symbols: {", ".join(SYMBOLS)}')
-    print(f'   Gemini AI: {"ENABLED ✓" if model else "DISABLED (no API key)"}')
-    print(f'   Features:')
-    print('   ✓ Multi-Timeframe Confluence Analysis')
-    print('   ✓ Liquidity Heatmap & Key Levels')
-    print('   ✓ Microstructure (Bid/Ask) Analysis')
-    print('   ✓ Risk/Opportunity Scoring')
-    print('   ✓ Enhanced Market Regime Detection')
-    print('   ✓ Bias Stability Tracking')
-    print('   ✓ Session Intelligence')
-    print('   ✓ Gemini AI Interpretations')
-    print('='*80)
-    print(f'🚀 Listening on port 8080')
+    print('🚀 Listening on port 8080')
     print('='*80 + '\n')
     
     web.run_app(app, port=8080)
