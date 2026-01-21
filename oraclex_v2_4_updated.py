@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ORACLEX V2.5+ - FIXED VERSION
-- Works with minimal data
-- Returns analysis even if incomplete
-- No 404 errors
+ORACLEX V2.5+ - FIXED DATA HANDLING
+- Logs incoming data from Relay
+- Processes market data correctly
+- Returns analysis for all symbols
 """
 
 import os
@@ -32,10 +32,9 @@ except:
 
 # Data storage
 market_data = {
+    "XAUUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
     "BTCUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
     "ETHUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
-    "XAUUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
-    "XAGUUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
     "EURUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
     "GBPUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
     "AUDUSD": {"candles": deque(maxlen=200), "current": None, "timestamp": None},
@@ -67,7 +66,7 @@ def save_analysis(symbol, confluence, confidence, interpretation):
     except:
         pass
 
-# ANALYSIS FUNCTIONS - Same as before
+# Analysis functions
 def calculate_market_regime(df: pd.DataFrame) -> Dict:
     if len(df) < 20:
         return {"trend": "Unknown", "volatility": "Normal", "structure": "Unknown"}
@@ -176,7 +175,6 @@ def calculate_dynamic_confluence(df: pd.DataFrame) -> float:
     
     scores = []
     
-    # RSI
     delta = df["close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -187,7 +185,6 @@ def calculate_dynamic_confluence(df: pd.DataFrame) -> float:
         rsi_pct = stats.percentileofscore(rsi_hist[-100:], rsi.iloc[-1])
         scores.append(1 if rsi_pct > 50 else 0)
     
-    # MACD
     exp1 = df["close"].ewm(span=12).mean()
     exp2 = df["close"].ewm(span=26).mean()
     macd = exp1 - exp2
@@ -195,32 +192,27 @@ def calculate_dynamic_confluence(df: pd.DataFrame) -> float:
     hist = macd - signal
     scores.append(1 if hist.iloc[-1] > 0 else 0)
     
-    # Stochastic
     min_p = df["close"].rolling(14).min()
     max_p = df["close"].rolling(14).max()
     k = 100 * (df["close"] - min_p) / (max_p - min_p)
     d = k.rolling(3).mean()
     scores.append(1 if k.iloc[-1] > d.iloc[-1] else 0)
     
-    # ATR
     atr = (df["high"] - df["low"]).rolling(14).mean()
     atr_hist = atr.dropna().tolist()
     if atr_hist and len(atr_hist) > 5:
         atr_pct = stats.percentileofscore(atr_hist[-100:], atr.iloc[-1])
         scores.append(1 if atr_pct > 25 else 0)
     
-    # BB
     bb_std = df["close"].std()
     bb_upper = df["close"].mean() + (2 * bb_std)
     bb_lower = df["close"].mean() - (2 * bb_std)
     bb_pos = (df["close"].iloc[-1] - bb_lower) / (bb_upper - bb_lower)
     scores.append(1 if bb_pos > 0.5 else 0)
     
-    # EMA20
     ema20 = df["close"].ewm(span=20).mean()
     scores.append(1 if df["close"].iloc[-1] > ema20.iloc[-1] else 0)
     
-    # ADX
     scores.append(1 if len(df) > 20 else 0)
     
     confluence = (sum(scores) / len(scores) * 100) if scores else 50.0
@@ -228,7 +220,6 @@ def calculate_dynamic_confluence(df: pd.DataFrame) -> float:
 
 def calculate_dynamic_confidence(confluence: float, volatility: str, spread: float) -> float:
     conf_pt = (confluence / 100) * 35
-    
     vol_pts = {"Expanding": 22, "Normal": 25, "Contracting": 15}.get(volatility, 20)
     
     if spread < 0.01:
@@ -241,7 +232,6 @@ def calculate_dynamic_confidence(confluence: float, volatility: str, spread: flo
         spread_pt = 3
     
     cons_pt = 15 if confluence > 60 else 8
-    
     total = conf_pt + vol_pts + spread_pt + cons_pt
     return round(min(100, max(0, total)), 1)
 
@@ -265,27 +255,47 @@ async def health(request):
 async def receive_data(request):
     try:
         payload = await request.json()
-        for sym_data in payload.get("market_data", []):
+        print(f"📥 Received data from Relay")
+        print(f"   Payload keys: {list(payload.keys())}")
+        
+        market_data_list = payload.get("market_data", [])
+        print(f"   Market data items: {len(market_data_list)}")
+        
+        for sym_data in market_data_list:
             sym = sym_data.get("symbol")
+            print(f"   → Processing: {sym}")
+            
             if sym not in market_data:
+                print(f"      ⚠ Symbol {sym} not in our list, skipping")
                 continue
             
             market_data[sym]["current"] = sym_data
             market_data[sym]["timestamp"] = datetime.now(timezone.utc)
             
+            # Process timeframes
             for tf in sym_data.get("timeframes", []):
                 for c in tf.get("candles", []):
-                    market_data[sym]["candles"].append({"time": c.get("t"), "o": c.get("o"), "h": c.get("h"), "l": c.get("l"), "c": c.get("c"), "v": c.get("v")})
+                    market_data[sym]["candles"].append({
+                        "time": c.get("t"),
+                        "o": c.get("o"),
+                        "h": c.get("h"),
+                        "l": c.get("l"),
+                        "c": c.get("c"),
+                        "v": c.get("v")
+                    })
+            
+            print(f"      ✓ {sym} stored, candles: {len(market_data[sym]['candles'])}")
         
-        return web.json_response({"status": "ok", "symbols": len(payload.get("market_data", []))})
+        print(f"   ✓ Processing complete\n")
+        return web.json_response({"status": "ok", "symbols": len(market_data_list)})
     except Exception as e:
+        print(f"   ❌ Error: {e}\n")
         return web.json_response({"error": str(e)}, status=400)
 
 async def analyze(sym: str) -> Dict:
-    """Full analysis - works even with minimal data"""
+    """Full analysis"""
     sym_data = market_data[sym]
     
-    # DEFAULT RESPONSE - even if no data
     default = {
         "symbol": sym,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -293,16 +303,14 @@ async def analyze(sym: str) -> Dict:
         "market_regime": {"trend": "Unknown", "volatility": "Normal", "structure": "Unknown"},
         "bias": "NEUTRAL",
         "bias_stability": {"bias": "NEUTRAL", "active_since_minutes": 0, "last_flip_minutes_ago": None},
-        "confluence_breakdown": {"EMA_Trend": {"weight": 0.4, "active": 0}, "Momentum": {"weight": 0.3, "active": 0}, "Volatility": {"weight": 0.2, "active": 0}, "Volume": {"weight": 0.1, "active": 0}},
+        "confluence_breakdown": {},
         "state_statistics": {"continuation": 45, "reversal": 35, "consolidation": 20},
         "current_session": get_current_session(),
         "confluence": 50.0,
         "confidence": 50.0,
         "interpretation": f"{sym}: Waiting for market data...",
-        "indicators": {"EMA50_above_200": False, "RSI_momentum": False, "BB_squeeze": False, "Volume_confirmed": False}
     }
     
-    # If we have candles, do full analysis
     if len(sym_data["candles"]) >= 5:
         try:
             df = pd.DataFrame(list(sym_data["candles"]))
@@ -337,16 +345,19 @@ async def analyze(sym: str) -> Dict:
                 "confluence": confluence,
                 "confidence": confidence,
                 "interpretation": interp,
-                "indicators": {"EMA50_above_200": regime["trend"] != "Weak", "RSI_momentum": bias["bias"] == "BULLISH", "BB_squeeze": regime["volatility"] == "Contracting", "Volume_confirmed": True}
             }
         except Exception as e:
-            print(f"Analysis error for {sym}: {e}")
+            print(f"   Analysis error for {sym}: {e}")
             return default
     
     return default
 
 async def all_analysis(request):
-    return web.json_response({"analyses": [await analyze(s) for s in market_data.keys()]})
+    analyses = []
+    for sym in market_data.keys():
+        analysis = await analyze(sym)
+        analyses.append(analysis)
+    return web.json_response({"analyses": analyses})
 
 async def symbol_analysis(request):
     sym = request.match_info.get("symbol", "").upper()
@@ -364,16 +375,19 @@ async def main():
     app.router.add_get("/analysis/{symbol}", symbol_analysis)
     
     port = int(os.getenv("PORT", 8080))
+    
     print("\n" + "="*80)
-    print("✨ ORACLEX V2.5+ - FIXED (Works with minimal data)")
+    print("✨ ORACLEX V2.5+ - PYTHON BACKEND")
     print("="*80)
+    print(f"✅ Server starting on port {port}")
+    print("="*80 + "\n")
     
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     
-    print(f"✅ Server running on port {port}\n")
+    print(f"✅ Listening on port {port}\n")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
