@@ -1,501 +1,532 @@
 #!/usr/bin/env python3
 """
-ORACLEX V2.1 - COMPLETE PYTHON BACKEND
-Full market analysis engine with all metrics
+ORACLEX V2.5+ WITH GEMINI - INSTITUTIONAL GRADE MARKET ANALYSIS
+Combines quantitative analysis with Gemini AI for deeper insights
 """
 
-import os
-import asyncio
-import json
 from aiohttp import web
-from datetime import datetime, timezone
-from collections import deque
 import pandas as pd
 import numpy as np
+import json
+from datetime import datetime
+import os
+import sys
+import asyncio
 
-# Market data storage
+# Import Gemini
+import google.generativeai as genai
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+SYMBOLS = ['XAUUSD', 'XAGUUSD', 'BTCUSD', 'ETHUSD', 'EURUSD', 'GBPUSD', 'AUDUSD', 'NZDUSD']
+TIMEFRAMES = ['M1', 'M5', 'M15', 'H1', 'H4', 'D1', 'W1']
+
+# Gemini setup
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-pro')
+else:
+    print("⚠️  GEMINI_API_KEY not set - Gemini features disabled")
+    model = None
+
+# ============================================================================
+# GLOBAL STATE
+# ============================================================================
+
 market_cache = {}
-
-# Symbols we support
-SYMBOLS = ["XAUUSD", "BTCUSD", "ETHUSD", "EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"]
-
 
 # ============================================================================
 # ANALYSIS ENGINE
 # ============================================================================
 
-def calculate_market_regime(df):
-    """Calculate trend, volatility, and structure"""
-    if len(df) < 20:
-        return {"trend": "Unknown", "volatility": "Normal", "structure": "Unknown"}
+class OracleXAnalyzer:
+    """Institutional grade market analysis with Gemini integration"""
     
-    try:
-        # Trend from EMA
-        ema_50 = df['close'].ewm(span=50, adjust=False).mean()
-        ema_200 = df['close'].ewm(span=200, adjust=False).mean()
-        
-        current_price = df['close'].iloc[-1]
-        ratio = ema_50.iloc[-1] / ema_200.iloc[-1]
-        
-        if ratio > 1.015:
-            trend = "Strong"
-        elif ratio < 0.985:
-            trend = "Weak"
-        else:
-            trend = "Ranging"
-        
-        # Volatility from Bollinger Bands width
-        bb_std = df['close'].std()
-        bb_width = (2 * bb_std) / df['close'].mean() * 100
-        
-        if bb_width > 4:
-            volatility = "Expanding"
-        elif bb_width < 1.5:
-            volatility = "Contracting"
-        else:
-            volatility = "Normal"
-        
-        # Structure from swing count
-        highs = df['high'].tail(20).values
-        lows = df['low'].tail(20).values
-        
-        swings = 0
-        for i in range(1, len(highs)-1):
-            if (highs[i] > highs[i-1] and highs[i] > highs[i+1]) or \
-               (lows[i] < lows[i-1] and lows[i] < lows[i+1]):
-                swings += 1
-        
-        structure = "Clean" if swings <= 5 else "Choppy"
-        
-        return {"trend": trend, "volatility": volatility, "structure": structure}
-    except Exception as e:
-        print(f"Market regime error: {e}")
-        return {"trend": "Unknown", "volatility": "Normal", "structure": "Unknown"}
-
-
-def calculate_bias_stability(df):
-    """Calculate current bias and how long it's been active"""
-    if len(df) < 5:
-        return {"bias": "NEUTRAL", "active_since_minutes": 0, "last_flip_minutes_ago": None}
+    def __init__(self):
+        self.cache = {}
+        self.model = model
     
-    try:
-        ema_50 = df['close'].ewm(span=50, adjust=False).mean()
-        current_bias = "BULLISH" if df['close'].iloc[-1] > ema_50.iloc[-1] else "BEARISH"
+    # ========================================================================
+    # 1. MULTI-TIMEFRAME ANALYSIS
+    # ========================================================================
+    
+    def calculate_multi_timeframe_confluence(self, symbol, timeframes_data):
+        """Analyze confluence across all timeframes"""
+        if not timeframes_data:
+            return {'dominant_tf': 'Unknown', 'agreement_score': 0, 'timeframe_bias': {}}
         
-        # Find when bias started
-        active_since = 0
-        for i in range(len(df) - 1, 0, -1):
-            bias = "BULLISH" if df['close'].iloc[i] > ema_50.iloc[i] else "BEARISH"
-            if bias != current_bias:
-                active_since = len(df) - i
+        timeframe_biases = {}
+        bullish_count = 0
+        bearish_count = 0
+        
+        for tf_name, tf_data in timeframes_data.items():
+            if not tf_data.get('candles') or len(tf_data['candles']) < 2:
+                continue
+            
+            candles = tf_data['candles']
+            recent = candles[-1]
+            ema_trend = 'BULLISH' if recent['c'] > recent.get('ema_20', recent['c']) else 'BEARISH'
+            
+            timeframe_biases[tf_name] = {
+                'bias': ema_trend,
+                'close': recent['c'],
+                'strength': abs(recent['c'] - recent.get('ema_20', recent['c']))
+            }
+            
+            if ema_trend == 'BULLISH':
+                bullish_count += 1
+            else:
+                bearish_count += 1
+        
+        # Determine dominant TF
+        dominant_tf = 'H1' if 'H1' in timeframes_data else ('H4' if 'H4' in timeframes_data else list(timeframe_biases.keys())[0] if timeframe_biases else 'Unknown')
+        total_tfs = len(timeframe_biases)
+        agreement_score = (max(bullish_count, bearish_count) / total_tfs * 100) if total_tfs > 0 else 0
+        
+        return {
+            'dominant_tf': dominant_tf,
+            'agreement_score': agreement_score,
+            'timeframe_bias': timeframe_biases,
+            'bullish_tfs': bullish_count,
+            'bearish_tfs': bearish_count,
+            'total_tfs': total_tfs
+        }
+    
+    # ========================================================================
+    # 2. LIQUIDITY HEATMAP
+    # ========================================================================
+    
+    def calculate_liquidity_levels(self, symbol, market_data):
+        """Identify key support/resistance and order clustering"""
+        if not market_data or 'timeframes' not in market_data:
+            return {'levels': [], 'support': [], 'resistance': []}
+        
+        current_price = market_data.get('price', 0)
+        levels = []
+        
+        for tf_name, tf_data in market_data['timeframes'].items():
+            if tf_name not in ['D1', 'H4']:
+                continue
+            
+            candles = tf_data.get('candles', [])
+            if len(candles) < 2:
+                continue
+            
+            for candle in candles[-20:]:
+                high = candle.get('h', 0)
+                low = candle.get('l', 0)
+                
+                if high > 0:
+                    levels.append({'price': high, 'type': 'resistance', 'tf': tf_name, 'strength': 'high' if high == max([c.get('h', 0) for c in candles[-20:]]) else 'normal'})
+                if low > 0:
+                    levels.append({'price': low, 'type': 'support', 'tf': tf_name, 'strength': 'high' if low == min([c.get('l', 0) for c in candles[-20:]]) else 'normal'})
+        
+        support_levels = sorted([l for l in levels if l['type'] == 'support'], key=lambda x: x['price'], reverse=True)
+        resistance_levels = sorted([l for l in levels if l['type'] == 'resistance'], key=lambda x: x['price'])
+        
+        return {
+            'levels': levels[:10],
+            'support': support_levels[:3],
+            'resistance': resistance_levels[:3],
+            'nearest_support': support_levels[0] if support_levels else None,
+            'nearest_resistance': resistance_levels[0] if resistance_levels else None
+        }
+    
+    # ========================================================================
+    # 3. MICROSTRUCTURE ANALYSIS
+    # ========================================================================
+    
+    def calculate_microstructure(self, symbol, market_data):
+        """Bid/Ask dynamics analysis"""
+        bid = market_data.get('bid', 0)
+        ask = market_data.get('ask', 0)
+        spread_points = market_data.get('spread_points', 0)
+        
+        mid = (bid + ask) / 2 if bid and ask else 0
+        spread_pct = (spread_points / mid * 100) if mid > 0 else 0
+        
+        return {
+            'bid': bid,
+            'ask': ask,
+            'mid': mid,
+            'spread_points': spread_points,
+            'spread_pct': spread_pct,
+            'imbalance': 0.5,
+            'interpretation': 'Tight spread - liquidity present' if spread_pct < 0.05 else 'Wide spread - low liquidity'
+        }
+    
+    # ========================================================================
+    # 4. RISK/OPPORTUNITY SCORING
+    # ========================================================================
+    
+    def calculate_risk_opportunity(self, symbol, confluence_score, volatility_regime, microstructure):
+        """Institutional risk/opportunity grades"""
+        spread_risk = min(microstructure.get('spread_pct', 0) * 20, 30)
+        volatility_risk = volatility_regime.get('volatility_points', 50)
+        risk_score = min(spread_risk + volatility_risk, 100)
+        
+        opportunity_score = min(confluence_score * 1.0, 100)
+        overall_score = min(max((opportunity_score - (risk_score / 2)) / 1.5, 0), 100)
+        
+        if overall_score >= 80:
+            grade = 'A+'
+        elif overall_score >= 70:
+            grade = 'A'
+        elif overall_score >= 60:
+            grade = 'B+'
+        elif overall_score >= 50:
+            grade = 'B'
+        else:
+            grade = 'C'
+        
+        return {
+            'risk_score': risk_score,
+            'opportunity_score': opportunity_score,
+            'overall_score': overall_score,
+            'grade': grade,
+            'risk_level': 'Low' if risk_score < 33 else 'Medium' if risk_score < 66 else 'High'
+        }
+    
+    # ========================================================================
+    # 5. MARKET REGIME
+    # ========================================================================
+    
+    def calculate_market_regime(self, symbol, market_data):
+        """Enhanced market regime detection"""
+        timeframes = market_data.get('timeframes', {})
+        
+        if not timeframes or 'H1' not in timeframes:
+            return {'trend': 'Unknown', 'volatility': 'Normal', 'structure': 'Unknown', 'volatility_points': 50}
+        
+        h1_data = timeframes['H1']
+        candles = h1_data.get('candles', [])
+        
+        if len(candles) < 2:
+            return {'trend': 'Insufficient Data', 'volatility': 'Normal', 'structure': 'Unknown', 'volatility_points': 50}
+        
+        recent = candles[-1]
+        trend = 'Strong Up' if recent.get('c', 0) > recent.get('ema_20', 0) else 'Strong Down'
+        
+        atr = h1_data.get('indicators', {}).get('atr', 0)
+        atr_mean = np.mean([c.get('h', 0) - c.get('l', 0) for c in candles[-20:]])
+        
+        if atr > atr_mean * 1.5:
+            volatility, volatility_points = 'Extreme', 80
+        elif atr > atr_mean * 1.2:
+            volatility, volatility_points = 'Elevated', 60
+        elif atr < atr_mean * 0.8:
+            volatility, volatility_points = 'Quiet', 30
+        else:
+            volatility, volatility_points = 'Normal', 50
+        
+        structure = 'Clean' if len([c for c in candles[-10:] if c.get('h', 0) > c.get('o', 0)]) >= 5 else 'Choppy'
+        
+        return {'trend': trend, 'volatility': volatility, 'structure': structure, 'volatility_points': volatility_points}
+    
+    # ========================================================================
+    # 6. BIAS STABILITY
+    # ========================================================================
+    
+    def calculate_bias_stability(self, symbol, market_data):
+        """Enhanced with multi-TF confluence"""
+        timeframes = market_data.get('timeframes', {})
+        
+        if not timeframes or 'M5' not in timeframes:
+            return {'bias': 'NEUTRAL', 'active_since_minutes': 0, 'multi_tf_agreement': 0, 'flip_probability': 50}
+        
+        m5_data = timeframes['M5']
+        candles = m5_data.get('candles', [])
+        
+        if len(candles) < 2:
+            return {'bias': 'NEUTRAL', 'active_since_minutes': 0, 'multi_tf_agreement': 0, 'flip_probability': 50}
+        
+        recent = candles[-1]
+        bias = 'BULLISH' if recent.get('c', 0) > recent.get('ema_20', 0) else 'BEARISH'
+        
+        active_candles = 1
+        for i in range(len(candles) - 2, -1, -1):
+            candle = candles[i]
+            candle_bias = 'BULLISH' if candle.get('c', 0) > candle.get('ema_20', 0) else 'BEARISH'
+            if candle_bias == bias:
+                active_candles += 1
+            else:
                 break
         
-        return {
-            "bias": current_bias,
-            "active_since_minutes": active_since,
-            "last_flip_minutes_ago": active_since if active_since > 0 else None
-        }
-    except Exception as e:
-        print(f"Bias stability error: {e}")
-        return {"bias": "NEUTRAL", "active_since_minutes": 0, "last_flip_minutes_ago": None}
-
-
-def calculate_confluence_breakdown(df):
-    """Calculate technical factor contributions"""
-    if len(df) < 10:
-        return {}
+        active_since_minutes = active_candles * 5
+        
+        agreement = sum(1 for tf_data in timeframes.values() if tf_data.get('candles') and ('BULLISH' if tf_data['candles'][-1].get('c', 0) > tf_data['candles'][-1].get('ema_20', 0) else 'BEARISH') == bias)
+        multi_tf_agreement = (agreement / len(timeframes) * 100) if timeframes else 0
+        
+        flip_probability = max(min(50 - (multi_tf_agreement / 4), 100), 0)
+        
+        return {'bias': bias, 'active_since_minutes': active_since_minutes, 'multi_tf_agreement': multi_tf_agreement, 'flip_probability': flip_probability}
     
-    try:
-        breakdown = {}
-        
-        # EMA Trend (35% weight when active)
-        ema_50 = df['close'].ewm(span=50, adjust=False).mean()
-        ema_trend_active = 1 if df['close'].iloc[-1] > ema_50.iloc[-1] else 0
-        breakdown['EMA_Trend'] = {
-            "weight": 0.35,
-            "active": ema_trend_active,
-            "description": "Price above/below 50-EMA"
-        }
-        
-        # Momentum (RSI)
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        momentum_active = 1 if rsi.iloc[-1] > 50 else 0
-        breakdown['Momentum'] = {
-            "weight": 0.30,
-            "active": momentum_active,
-            "description": f"RSI: {rsi.iloc[-1]:.1f}"
-        }
-        
-        # Volatility (ATR relative to price)
-        atr = (df['high'] - df['low']).rolling(window=14).mean()
-        vol_active = 1 if atr.iloc[-1] > atr.mean() else 0
-        breakdown['Volatility'] = {
-            "weight": 0.20,
-            "active": vol_active,
-            "description": "ATR expansion"
-        }
-        
-        # Volume (if available, else check close momentum)
-        if 'volume' in df.columns:
-            vol_active = 1 if df['volume'].iloc[-1] > df['volume'].mean() else 0
-        else:
-            vol_active = 1
-        breakdown['Volume'] = {
-            "weight": 0.15,
-            "active": vol_active,
-            "description": "Volume/momentum"
-        }
-        
-        return breakdown
-    except Exception as e:
-        print(f"Confluence breakdown error: {e}")
-        return {}
-
-
-def calculate_dynamic_confluence(df):
-    """Calculate confluence score (0-100)"""
-    if len(df) < 10:
-        return 50.0
+    # ========================================================================
+    # 7. DYNAMIC CONFLUENCE
+    # ========================================================================
     
-    try:
-        scores = []
+    def calculate_dynamic_confluence(self, symbol, market_data):
+        """Enhanced multi-timeframe confluence"""
+        timeframes = market_data.get('timeframes', {})
+        confluence_points = 0
+        total_indicators = 0
         
-        # RSI
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        scores.append(1 if rsi.iloc[-1] > 50 else 0)
+        for tf_name, tf_data in timeframes.items():
+            candles = tf_data.get('candles', [])
+            if not candles:
+                continue
+            
+            indicators = tf_data.get('indicators', {})
+            
+            rsi = indicators.get('rsi', 50)
+            if rsi > 60 or rsi < 40:
+                confluence_points += 1
+            total_indicators += 1
+            
+            macd_hist = indicators.get('macd_histogram', 0)
+            if macd_hist != 0:
+                confluence_points += 1
+            total_indicators += 1
+            
+            recent = candles[-1]
+            if recent.get('c', 0) > recent.get('ema_20', 0):
+                confluence_points += 1
+            total_indicators += 1
         
-        # MACD
-        exp1 = df['close'].ewm(span=12, adjust=False).mean()
-        exp2 = df['close'].ewm(span=26, adjust=False).mean()
-        macd = exp1 - exp2
-        signal = macd.ewm(span=9, adjust=False).mean()
-        macd_hist = macd - signal
-        scores.append(1 if macd_hist.iloc[-1] > 0 else 0)
+        confluence_score = (confluence_points / total_indicators * 100) if total_indicators > 0 else 50
         
-        # Stochastic
-        low_min = df['close'].rolling(window=14).min()
-        high_max = df['close'].rolling(window=14).max()
-        k = 100 * (df['close'] - low_min) / (high_max - low_min)
-        d = k.rolling(window=3).mean()
-        scores.append(1 if k.iloc[-1] > d.iloc[-1] else 0)
-        
-        # ATR trend
-        atr = (df['high'] - df['low']).rolling(window=14).mean()
-        scores.append(1 if atr.iloc[-1] > atr.mean() else 0)
-        
-        # Bollinger Bands position
-        bb_std = df['close'].std()
-        bb_mid = df['close'].mean()
-        bb_upper = bb_mid + (2 * bb_std)
-        bb_lower = bb_mid - (2 * bb_std)
-        if bb_upper - bb_lower > 0:
-            bb_pos = (df['close'].iloc[-1] - bb_lower) / (bb_upper - bb_lower)
-            scores.append(1 if bb_pos > 0.5 else 0)
-        
-        # EMA trend
-        ema_20 = df['close'].ewm(span=20, adjust=False).mean()
-        scores.append(1 if df['close'].iloc[-1] > ema_20.iloc[-1] else 0)
-        
-        # ADX trend strength
-        scores.append(1)  # Always count as present
-        
-        confluence = (sum(scores) / len(scores) * 100) if scores else 50.0
-        return round(confluence, 1)
-    except Exception as e:
-        print(f"Confluence calculation error: {e}")
-        return 50.0
-
-
-def calculate_confidence(confluence, volatility):
-    """Calculate confidence based on confluence and volatility"""
-    try:
-        conf_pts = (confluence / 100) * 35
-        
-        if volatility == "Expanding":
-            vol_pts = 22
-        elif volatility == "Contracting":
-            vol_pts = 15
-        else:
-            vol_pts = 25
-        
-        spread_pts = 15
-        consistency_pts = 15 if confluence > 60 else 8
-        
-        total = conf_pts + vol_pts + spread_pts + consistency_pts
-        return round(min(100, max(0, total)), 1)
-    except:
-        return 50.0
-
-
-def calculate_state_statistics(df):
-    """Calculate historical outcomes: Continuation, Reversal, Consolidation"""
-    if len(df) < 50:
-        return {"continuation": 45, "reversal": 35, "consolidation": 20}
+        return {'confluence_score': confluence_score, 'confluence_points': confluence_points, 'total_indicators': total_indicators}
     
-    try:
-        returns = df['close'].pct_change().tail(20)
+    # ========================================================================
+    # 8. SESSION INTELLIGENCE
+    # ========================================================================
+    
+    def get_session_intelligence(self, symbol):
+        """Session volatility ranking"""
+        from datetime import datetime, timezone
         
-        continuations = 0
-        reversals = 0
+        utc_hour = datetime.now(timezone.utc).hour
         
-        for i in range(1, len(returns)):
-            if returns.iloc[i] * returns.iloc[i-1] > 0:
-                continuations += 1
-            elif returns.iloc[i] * returns.iloc[i-1] < 0:
-                reversals += 1
+        if 0 <= utc_hour < 9:
+            session, volatility = 'Asia', 30
+        elif 8 <= utc_hour < 17:
+            session, volatility = 'Europe', 70
+        elif 16 <= utc_hour < 24:
+            session, volatility = 'US', 80
+        else:
+            session, volatility = 'Overlap', 60
         
-        total = continuations + reversals if (continuations + reversals) > 0 else 1
-        
-        cont_pct = int((continuations / total) * 100)
-        rev_pct = int((reversals / total) * 100)
-        cons_pct = 100 - cont_pct - rev_pct
-        
-        return {
-            "continuation": max(0, cont_pct),
-            "reversal": max(0, rev_pct),
-            "consolidation": max(0, cons_pct)
+        sessions_map = {
+            'Asia': '00:00-09:00 UTC',
+            'Europe': '08:00-17:00 UTC',
+            'US': '16:00-23:59 UTC',
+            'Overlap': 'Overlapping hours'
         }
-    except Exception as e:
-        print(f"State statistics error: {e}")
-        return {"continuation": 45, "reversal": 35, "consolidation": 20}
-
-
-def get_current_session():
-    """Get current trading session"""
-    hour = datetime.now(timezone.utc).hour
-    if 0 <= hour < 8:
-        return "Asia"
-    elif 8 <= hour < 16:
-        return "Europe"
-    elif 16 <= hour < 24:
-        return "US"
-    return "Overlap"
-
-
-def generate_interpretation(symbol, confluence, confidence, bias, regime):
-    """Generate plain English market interpretation"""
-    try:
-        trend = regime.get('trend', 'Unknown')
-        vol = regime.get('volatility', 'Normal')
         
-        if confidence > 70:
-            conf_text = "showing strong clarity"
-        elif confidence > 50:
-            conf_text = "showing moderate clarity"
-        else:
-            conf_text = "showing weak clarity"
+        return {'current_session': session, 'typical_volatility': volatility, 'session_hours': sessions_map.get(session)}
+    
+    # ========================================================================
+    # GEMINI ANALYSIS
+    # ========================================================================
+    
+    async def generate_gemini_interpretation(self, symbol, analysis_data):
+        """Generate AI-powered market interpretation with Gemini"""
+        if not self.model:
+            return self._generate_fallback_interpretation(symbol, analysis_data)
         
-        if bias == "BULLISH":
-            bias_text = "bullish bias with upside potential"
-        elif bias == "BEARISH":
-            bias_text = "bearish bias with downside pressure"
-        else:
-            bias_text = "neutral positioning"
+        try:
+            confluence = analysis_data.get('confluence_score', 0)
+            confidence = analysis_data.get('confidence_level', 0)
+            bias = analysis_data.get('bias_stability', {}).get('bias', 'NEUTRAL')
+            regime = analysis_data.get('market_regime', {})
+            liquidity = analysis_data.get('liquidity', {})
+            microstructure = analysis_data.get('microstructure', {})
+            risk_opp = analysis_data.get('risk_opportunity', {})
+            
+            prompt = f"""
+Analyze {symbol} market data and provide a professional trading perspective:
+
+MARKET STRUCTURE:
+- Price: ${analysis_data.get('price', 0)}
+- Bias: {bias}
+- Confluence: {confluence:.1f}%
+- Market Regime: {regime.get('trend')} trend, {regime.get('volatility')} volatility
+- Structure: {regime.get('structure')}
+
+TECHNICAL SETUP:
+- Confluence Score: {confluence:.0f}%
+- Confidence Level: {confidence:.0f}%
+- Risk Grade: {risk_opp.get('grade')}
+- Risk Score: {risk_opp.get('risk_score'):.0f}/100
+
+LIQUIDITY & EXECUTION:
+- Spread: {microstructure.get('spread_pct', 0):.3f}%
+- Nearest Support: ${liquidity.get('nearest_support', {}).get('price', 'N/A')}
+- Nearest Resistance: ${liquidity.get('nearest_resistance', {}).get('price', 'N/A')}
+
+Provide:
+1. Market interpretation (1-2 sentences)
+2. Setup description (what's happening, what to watch)
+3. Trading context (risk/reward, confluencing factors)
+
+Be concise, professional, institutional-grade analysis. Focus on setup clarity and confluence strength.
+"""
+            
+            response = await asyncio.to_thread(lambda: self.model.generate_content(prompt))
+            return response.text
+        except Exception as e:
+            print(f"Gemini error: {e}")
+            return self._generate_fallback_interpretation(symbol, analysis_data)
+    
+    def _generate_fallback_interpretation(self, symbol, analysis_data):
+        """Fallback interpretation when Gemini unavailable"""
+        confluence = analysis_data.get('confluence_score', 0)
+        confidence = analysis_data.get('confidence_level', 0)
+        bias = analysis_data.get('bias_stability', {}).get('bias', 'NEUTRAL')
+        regime = analysis_data.get('market_regime', {})
         
-        interpretation = f"{symbol} is {conf_text} with {bias_text}. Market shows {trend.lower()} trend and {vol.lower()} volatility. Confluence at {confluence:.0f}% suggests moderate agreement among technical factors."
+        interpretation = f"{symbol} showing "
+        interpretation += "strong clarity" if confidence > 70 else "moderate clarity" if confidence > 50 else "weak clarity"
+        interpretation += f" with {bias.lower()} bias. Market shows {regime.get('trend', 'Unknown').lower()} trend and {regime.get('volatility', 'Normal').lower()} volatility. "
+        interpretation += f"Confluence at {confluence:.0f}% indicates {'strong' if confluence > 70 else 'moderate' if confluence > 50 else 'weak'} agreement."
         
         return interpretation
-    except:
-        return f"{symbol}: Analysis pending"
-
 
 # ============================================================================
-# API ENDPOINTS
+# AIOHTTP HANDLERS
 # ============================================================================
 
-async def health(request):
-    """Health check endpoint"""
-    return web.json_response({
-        "status": "ok",
-        "version": "2.1",
-        "cached_symbols": len(market_cache),
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
+analyzer = OracleXAnalyzer()
 
-
-async def receive_market_data(request):
+async def handle_market_data(request):
     """Receive market data from Relay"""
     try:
-        payload = await request.json()
-        market_data = payload.get("market_data", [])
+        data = await request.json()
+        market_data_list = data.get('market_data', [])
         
-        print(f"\n✅ PYTHON RECEIVED {len(market_data)} SYMBOLS FROM RELAY")
+        for market_data in market_data_list:
+            symbol = market_data.get('symbol')
+            if symbol:
+                market_cache[symbol] = market_data
         
-        for sym_data in market_data:
-            sym = sym_data.get("symbol", "").upper()
-            if sym in SYMBOLS:
-                market_cache[sym] = sym_data
-                print(f"   ✓ {sym} - stored {len(sym_data.get('timeframes', []))} timeframes")
-        
-        print(f"   Total cached: {len(market_cache)}\n")
-        return web.json_response({"status": "ok", "stored": len(market_cache)})
-    
+        return web.json_response({'stored': len(market_data_list), 'timestamp': datetime.now().isoformat()})
     except Exception as e:
-        print(f"❌ Receive error: {e}\n")
-        return web.json_response({"error": str(e)}, status=400)
+        return web.json_response({'error': str(e)}, status=400)
 
-
-async def analyze_symbol(sym):
-    """Analyze a single symbol"""
-    
-    # Default response
-    default = {
-        "symbol": sym,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "price": 0,
-        "confluence": 50.0,
-        "confidence": 50.0,
-        "bias": "NEUTRAL",
-        "market_regime": {"trend": "Unknown", "volatility": "Normal", "structure": "Unknown"},
-        "bias_stability": {"bias": "NEUTRAL", "active_since_minutes": 0},
-        "confluence_breakdown": {},
-        "state_statistics": {"continuation": 45, "reversal": 35, "consolidation": 20},
-        "session": get_current_session(),
-        "interpretation": f"{sym}: Waiting for market data..."
-    }
-    
-    # Check if we have data
-    if sym not in market_cache:
-        return default
-    
-    sym_data = market_cache[sym]
-    
+async def handle_analysis(request):
+    """Get analysis for specific symbol"""
     try:
-        # Get price
-        price = sym_data.get("price", 0)
+        symbol = request.match_info.get('symbol', '').upper()
         
-        # Find best timeframe for analysis (H1 or M5)
-        candles_data = []
-        for tf in sym_data.get("timeframes", []):
-            if tf.get("timeframe") in ["H1", "M5"]:
-                candles_data = tf.get("candles", [])
-                if len(candles_data) >= 20:
-                    break
+        if symbol not in market_cache:
+            return web.json_response({'error': f'{symbol} not found'}, status=404)
         
-        if len(candles_data) < 20:
-            return default
+        market_data = market_cache[symbol]
         
-        # Build dataframe
-        df_list = []
-        for c in candles_data:
-            df_list.append({
-                "time": c.get("t", 0),
-                "open": float(c.get("o", 0)),
-                "high": float(c.get("h", 0)),
-                "low": float(c.get("l", 0)),
-                "close": float(c.get("c", 0)),
-                "volume": float(c.get("v", 0))
-            })
+        multi_tf = analyzer.calculate_multi_timeframe_confluence(symbol, market_data.get('timeframes', {}))
+        liquidity = analyzer.calculate_liquidity_levels(symbol, market_data)
+        microstructure = analyzer.calculate_microstructure(symbol, market_data)
+        regime = analyzer.calculate_market_regime(symbol, market_data)
+        bias = analyzer.calculate_bias_stability(symbol, market_data)
+        confluence = analyzer.calculate_dynamic_confluence(symbol, market_data)
+        session = analyzer.get_session_intelligence(symbol)
         
-        df = pd.DataFrame(df_list)
+        risk_opp = analyzer.calculate_risk_opportunity(symbol, confluence.get('confluence_score', 50), regime, microstructure)
         
-        if len(df) < 20:
-            return default
+        confidence_level = (multi_tf.get('agreement_score', 0) + confluence.get('confluence_score', 0)) / 2
         
-        # Calculate all metrics
-        regime = calculate_market_regime(df)
-        bias_stability = calculate_bias_stability(df)
-        confluence = calculate_dynamic_confluence(df)
-        confidence = calculate_confidence(confluence, regime['volatility'])
-        breakdown = calculate_confluence_breakdown(df)
-        stats = calculate_state_statistics(df)
-        session = get_current_session()
-        interpretation = generate_interpretation(sym, confluence, confidence, bias_stability['bias'], regime)
-        
-        return {
-            "symbol": sym,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "price": float(price),
-            "confluence": confluence,
-            "confidence": confidence,
-            "bias": bias_stability['bias'],
-            "market_regime": regime,
-            "bias_stability": bias_stability,
-            "confluence_breakdown": breakdown,
-            "state_statistics": stats,
-            "session": session,
-            "interpretation": interpretation
+        # Generate Gemini interpretation
+        analysis_data = {
+            'price': market_data.get('price', 0),
+            'confluence_score': confluence.get('confluence_score', 0),
+            'confidence_level': confidence_level,
+            'bias_stability': bias,
+            'market_regime': regime,
+            'liquidity': liquidity,
+            'microstructure': microstructure,
+            'risk_opportunity': risk_opp
         }
-    
+        
+        gemini_interpretation = await analyzer.generate_gemini_interpretation(symbol, analysis_data)
+        
+        analysis = {
+            'symbol': symbol,
+            'price': market_data.get('price', 0),
+            'bias': bias.get('bias'),
+            'confluence': confluence.get('confluence_score', 0),
+            'confidence': confidence_level,
+            'market_regime': regime,
+            'bias_stability': bias,
+            'multi_timeframe': multi_tf,
+            'liquidity': liquidity,
+            'microstructure': microstructure,
+            'risk_opportunity': risk_opp,
+            'session': session,
+            'interpretation': gemini_interpretation
+        }
+        
+        return web.json_response(analysis)
     except Exception as e:
-        print(f"Analysis error for {sym}: {e}")
-        return default
+        return web.json_response({'error': str(e)}, status=500)
 
-
-async def latest_analysis(request):
+async def handle_latest_analysis(request):
     """Get analysis for all symbols"""
     try:
         analyses = []
-        for sym in SYMBOLS:
-            analysis = await analyze_symbol(sym)
-            analyses.append(analysis)
         
-        return web.json_response({"analyses": analyses, "timestamp": datetime.now(timezone.utc).isoformat()})
+        for symbol in SYMBOLS:
+            if symbol in market_cache:
+                market_data = market_cache[symbol]
+                confluence = analyzer.calculate_dynamic_confluence(symbol, market_data)
+                regime = analyzer.calculate_market_regime(symbol, market_data)
+                bias = analyzer.calculate_bias_stability(symbol, market_data)
+                
+                analyses.append({
+                    'symbol': symbol,
+                    'price': market_data.get('price', 0),
+                    'confluence': confluence.get('confluence_score', 0),
+                    'bias': bias.get('bias'),
+                    'regime': regime.get('volatility')
+                })
+        
+        return web.json_response({'analyses': analyses})
     except Exception as e:
-        print(f"Latest analysis error: {e}")
-        return web.json_response({"analyses": [], "error": str(e)})
+        return web.json_response({'error': str(e)}, status=500)
 
-
-async def symbol_analysis(request):
-    """Get analysis for single symbol"""
-    sym = request.match_info.get("symbol", "").upper()
-    
-    if sym not in SYMBOLS:
-        return web.json_response({"error": "Invalid symbol"}, status=404)
-    
-    analysis = await analyze_symbol(sym)
-    return web.json_response(analysis)
-
+async def handle_health(request):
+    """Health check"""
+    return web.json_response({'status': 'OK', 'cached_symbols': list(market_cache.keys()), 'gemini_enabled': bool(model), 'timestamp': datetime.now().isoformat()})
 
 # ============================================================================
-# SERVER START
+# STARTUP
 # ============================================================================
 
-async def main():
-    app = web.Application()
-    
-    # Routes
-    app.router.add_get("/", health)
-    app.router.add_post("/market-data-v1.6", receive_market_data)
-    app.router.add_post("/market-data", receive_market_data)
-    app.router.add_get("/latest-analysis", latest_analysis)
-    app.router.add_get("/analysis/{symbol}", symbol_analysis)
-    
-    port = int(os.getenv("PORT", 8080))
-    
-    print("\n" + "="*80)
-    print("✨ ORACLEX V2.1 - PYTHON BACKEND (COMPLETE)")
-    print("="*80)
-    print(f"🔒 Private Railway network: oraclex-python-backend.railway.internal")
-    print(f"🚀 Listening on port {port}")
-    print(f"📊 Symbols: {', '.join(SYMBOLS)}")
-    print("="*80)
-    print("\nFeatures:")
-    print("  ✓ Market Regime Analysis (Trend, Volatility, Structure)")
-    print("  ✓ Bias Stability Tracking")
-    print("  ✓ Dynamic Confluence Score (0-100)")
-    print("  ✓ Confidence Level Calculation")
-    print("  ✓ Technical Factor Breakdown")
-    print("  ✓ State Statistics (Continuation, Reversal, Consolidation)")
-    print("  ✓ Session Intelligence")
-    print("  ✓ Plain English Interpretations")
-    print("="*80 + "\n")
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    
-    await asyncio.Event().wait()
+app = web.Application()
+app.router.add_post('/market-data-v1.6', handle_market_data)
+app.router.add_get('/analysis/{symbol}', handle_analysis)
+app.router.add_get('/latest-analysis', handle_latest_analysis)
+app.router.add_get('/', handle_health)
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    print('\n' + '='*80)
+    print('✨ ORACLEX V2.5+ WITH GEMINI - INSTITUTIONAL BACKEND')
+    print('='*80)
+    print(f'   Symbols: {", ".join(SYMBOLS)}')
+    print(f'   Gemini AI: {"ENABLED ✓" if model else "DISABLED (no API key)"}')
+    print(f'   Features:')
+    print('   ✓ Multi-Timeframe Confluence Analysis')
+    print('   ✓ Liquidity Heatmap & Key Levels')
+    print('   ✓ Microstructure (Bid/Ask) Analysis')
+    print('   ✓ Risk/Opportunity Scoring')
+    print('   ✓ Enhanced Market Regime Detection')
+    print('   ✓ Bias Stability Tracking')
+    print('   ✓ Session Intelligence')
+    print('   ✓ Gemini AI Interpretations')
+    print('='*80)
+    print(f'🚀 Listening on port 8080')
+    print('='*80 + '\n')
+    
+    web.run_app(app, port=8080)
