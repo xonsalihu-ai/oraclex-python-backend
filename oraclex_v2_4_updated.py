@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 ORACLEX V2.5+ FINAL - Fixed to handle EA data format correctly
+WITH ENHANCED DEBUGGING
 """
 
 from aiohttp import web
@@ -317,11 +318,14 @@ analyzer = OracleXAnalyzer()
 async def handle_market_data(request):
     try:
         data = await request.json()
+        print(f"\n{'='*80}")
+        print(f"[RAW DATA RECEIVED]")
+        print(json.dumps(data, indent=2)[:500])  # Print first 500 chars
+        print(f"{'='*80}")
+        
         market_data_list = data.get('market_data', [])
         
-        print(f"\n{'='*80}")
-        print(f"[RECEIVED] {len(market_data_list)} symbols")
-        print(f"{'='*80}")
+        print(f"[PROCESSING] {len(market_data_list)} symbols")
         
         # Handle both list and dict formats
         if isinstance(market_data_list, dict):
@@ -331,22 +335,32 @@ async def handle_market_data(request):
             try:
                 symbol = market_data.get('symbol', f'SYMBOL_{idx}')
                 market_cache[symbol] = market_data
-                print(f"✅ {symbol} - stored")
+                print(f"  ✅ {symbol} - stored in cache")
             except Exception as e:
-                print(f"⚠️  Error processing item {idx}: {e}")
+                print(f"  ⚠️  Error processing item {idx}: {e}")
         
-        print(f"✅ Processed {len(market_data_list)} symbols\n")
+        print(f"[CACHE STATUS] Current symbols in cache: {list(market_cache.keys())}")
+        print(f"{'='*80}\n")
+        
         return web.json_response({'stored': len(market_data_list), 'timestamp': datetime.now().isoformat()})
     except Exception as e:
         print(f"[ERROR] Market data handler: {e}")
+        import traceback
+        traceback.print_exc()
         return web.json_response({'error': str(e)}, status=400)
 
 async def handle_analysis(request):
     try:
         symbol = request.match_info.get('symbol', '').upper()
         
+        print(f"\n[ANALYSIS REQUEST] Symbol: {symbol}")
+        print(f"[CACHE CONTENTS] Available: {list(market_cache.keys())}")
+        
         if symbol not in market_cache:
-            return web.json_response({'error': f'{symbol} not found'}, status=404)
+            print(f"❌ {symbol} NOT FOUND in cache")
+            return web.json_response({'error': f'{symbol} not found in cache. Available: {list(market_cache.keys())}'}, status=404)
+        
+        print(f"✅ {symbol} found in cache, generating analysis...")
         
         market_data = market_cache[symbol]
         
@@ -393,9 +407,12 @@ async def handle_analysis(request):
             'interpretation': interpretation
         }
         
+        print(f"✅ Analysis generated for {symbol}")
         return web.json_response(analysis)
     except Exception as e:
         print(f"[ERROR] Analysis handler: {e}")
+        import traceback
+        traceback.print_exc()
         return web.json_response({'error': str(e)}, status=500)
 
 async def handle_latest_analysis(request):
@@ -423,7 +440,12 @@ async def handle_latest_analysis(request):
         return web.json_response({'error': str(e)}, status=500)
 
 async def handle_health(request):
-    return web.json_response({'status': 'OK', 'cached_symbols': list(market_cache.keys()), 'timestamp': datetime.now().isoformat()})
+    return web.json_response({
+        'status': 'OK',
+        'cached_symbols': list(market_cache.keys()),
+        'cache_size': len(market_cache),
+        'timestamp': datetime.now().isoformat()
+    })
 
 app = web.Application()
 app.router.add_post('/market-data-v1.6', handle_market_data)
@@ -433,9 +455,14 @@ app.router.add_get('/', handle_health)
 
 if __name__ == '__main__':
     print('\n' + '='*80)
-    print('✨ ORACLEX V2.5+ - INSTITUTIONAL BACKEND (FINAL FIX)')
+    print('✨ ORACLEX V2.5+ - INSTITUTIONAL BACKEND (DEBUG MODE)')
     print('='*80)
     print('🚀 Listening on port 8080')
+    print('📊 Endpoints:')
+    print('   POST /market-data-v1.6 - Receive market data')
+    print('   GET  /analysis/{symbol} - Get analysis for symbol')
+    print('   GET  /latest-analysis - Get all cached analyses')
+    print('   GET  / - Health check')
     print('='*80 + '\n')
     
     web.run_app(app, port=8080)
