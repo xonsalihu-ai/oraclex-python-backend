@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-ORACLEX V2.5+ FINAL - Fixed to handle EA data format correctly
-WITH ENHANCED DEBUGGING
+ORACLEX V2.5+ - With data validation and detailed logging
 """
 
 from aiohttp import web
@@ -15,6 +14,30 @@ market_cache = {}
 
 class OracleXAnalyzer:
     
+    def validate_timeframes(self, timeframes):
+        """Check if timeframes data is valid"""
+        if not timeframes:
+            return False, "No timeframes"
+        
+        if isinstance(timeframes, list):
+            return False, "Timeframes is array, needs to be object"
+        
+        if not isinstance(timeframes, dict):
+            return False, f"Timeframes is {type(timeframes)}, needs to be dict"
+        
+        # Check for at least one timeframe with candles
+        valid_tfs = 0
+        for tf_name, tf_data in timeframes.items():
+            if tf_data and isinstance(tf_data, dict):
+                candles = tf_data.get('candles', [])
+                if candles and len(candles) > 2:
+                    valid_tfs += 1
+        
+        if valid_tfs == 0:
+            return False, f"No valid timeframes found. Checked {len(timeframes)} timeframes"
+        
+        return True, f"Valid - {valid_tfs} timeframes with candle data"
+    
     def calculate_multi_timeframe_confluence(self, symbol, timeframes_data):
         if not timeframes_data:
             return {'dominant_tf': 'Unknown', 'agreement_score': 0, 'timeframe_bias': {}}
@@ -25,7 +48,11 @@ class OracleXAnalyzer:
         
         try:
             for tf_name, tf_data in timeframes_data.items():
-                if not tf_data or not tf_data.get('candles') or len(tf_data['candles']) < 2:
+                if not tf_data or not isinstance(tf_data, dict):
+                    continue
+                
+                candles = tf_data.get('candles', [])
+                if not candles or len(candles) < 2:
                     continue
                 
                 candles = tf_data['candles']
@@ -69,7 +96,10 @@ class OracleXAnalyzer:
                 if tf_name not in ['D1', 'H4']:
                     continue
                 
-                candles = tf_data.get('candles', []) if tf_data else []
+                if not tf_data or not isinstance(tf_data, dict):
+                    continue
+                
+                candles = tf_data.get('candles', [])
                 if len(candles) < 2:
                     continue
                 
@@ -170,7 +200,10 @@ class OracleXAnalyzer:
                 return {'trend': 'Unknown', 'volatility': 'Normal', 'structure': 'Unknown', 'volatility_points': 50}
             
             h1_data = timeframes['H1']
-            candles = h1_data.get('candles', []) if h1_data else []
+            if not h1_data or not isinstance(h1_data, dict):
+                return {'trend': 'Unknown', 'volatility': 'Normal', 'structure': 'Unknown', 'volatility_points': 50}
+            
+            candles = h1_data.get('candles', [])
             
             if len(candles) < 2:
                 return {'trend': 'Insufficient Data', 'volatility': 'Normal', 'structure': 'Unknown', 'volatility_points': 50}
@@ -205,7 +238,10 @@ class OracleXAnalyzer:
                 return {'bias': 'NEUTRAL', 'active_since_minutes': 0, 'multi_tf_agreement': 0, 'flip_probability': 50}
             
             m5_data = timeframes['M5']
-            candles = m5_data.get('candles', []) if m5_data else []
+            if not m5_data or not isinstance(m5_data, dict):
+                return {'bias': 'NEUTRAL', 'active_since_minutes': 0, 'multi_tf_agreement': 0, 'flip_probability': 50}
+            
+            candles = m5_data.get('candles', [])
             
             if len(candles) < 2:
                 return {'bias': 'NEUTRAL', 'active_since_minutes': 0, 'multi_tf_agreement': 0, 'flip_probability': 50}
@@ -224,7 +260,7 @@ class OracleXAnalyzer:
             
             active_since_minutes = active_candles * 5
             
-            agreement = sum(1 for tf_data in timeframes.values() if tf_data and tf_data.get('candles') and ('BULLISH' if tf_data['candles'][-1].get('c', 0) > tf_data['candles'][-1].get('ema_20', 0) else 'BEARISH') == bias)
+            agreement = sum(1 for tf_data in timeframes.values() if tf_data and isinstance(tf_data, dict) and tf_data.get('candles') and ('BULLISH' if tf_data['candles'][-1].get('c', 0) > tf_data['candles'][-1].get('ema_20', 0) else 'BEARISH') == bias)
             multi_tf_agreement = (agreement / len(timeframes) * 100) if timeframes else 0
             
             flip_probability = max(min(50 - (multi_tf_agreement / 4), 100), 0)
@@ -241,11 +277,14 @@ class OracleXAnalyzer:
             total_indicators = 0
             
             for tf_name, tf_data in timeframes.items():
-                candles = tf_data.get('candles', []) if tf_data else []
+                if not tf_data or not isinstance(tf_data, dict):
+                    continue
+                
+                candles = tf_data.get('candles', [])
                 if not candles:
                     continue
                 
-                indicators = tf_data.get('indicators', {}) if tf_data else {}
+                indicators = tf_data.get('indicators', {})
                 recent = candles[-1]
                 
                 rsi = indicators.get('rsi', 50)
@@ -318,14 +357,11 @@ analyzer = OracleXAnalyzer()
 async def handle_market_data(request):
     try:
         data = await request.json()
-        print(f"\n{'='*80}")
-        print(f"[RAW DATA RECEIVED]")
-        print(json.dumps(data, indent=2)[:500])  # Print first 500 chars
-        print(f"{'='*80}")
-        
         market_data_list = data.get('market_data', [])
         
-        print(f"[PROCESSING] {len(market_data_list)} symbols")
+        print(f"\n{'='*80}")
+        print(f"[RECEIVED] {len(market_data_list)} symbols at {datetime.now().isoformat()}")
+        print(f"{'='*80}")
         
         # Handle both list and dict formats
         if isinstance(market_data_list, dict):
@@ -334,15 +370,29 @@ async def handle_market_data(request):
         for idx, market_data in enumerate(market_data_list):
             try:
                 symbol = market_data.get('symbol', f'SYMBOL_{idx}')
-                market_cache[symbol] = market_data
-                print(f"  ✅ {symbol} - stored in cache")
+                
+                # Validate timeframes
+                timeframes = market_data.get('timeframes', {})
+                is_valid, validation_msg = analyzer.validate_timeframes(timeframes)
+                
+                print(f"  {symbol}:")
+                print(f"    - Price: {market_data.get('price', 'N/A')}")
+                print(f"    - Spread: {market_data.get('spread_points', 'N/A')} points")
+                print(f"    - Timeframes: {validation_msg}")
+                
+                if is_valid:
+                    market_cache[symbol] = market_data
+                    print(f"    ✅ STORED in cache")
+                else:
+                    print(f"    ❌ REJECTED - invalid timeframe data")
+                    
             except Exception as e:
-                print(f"  ⚠️  Error processing item {idx}: {e}")
+                print(f"  Error processing {symbol}: {e}")
         
-        print(f"[CACHE STATUS] Current symbols in cache: {list(market_cache.keys())}")
+        print(f"\n✅ Cache now contains: {list(market_cache.keys())}")
         print(f"{'='*80}\n")
         
-        return web.json_response({'stored': len(market_data_list), 'timestamp': datetime.now().isoformat()})
+        return web.json_response({'stored': len([m for m in market_data_list if analyzer.validate_timeframes(m.get('timeframes', {}))[0]]), 'timestamp': datetime.now().isoformat()})
     except Exception as e:
         print(f"[ERROR] Market data handler: {e}")
         import traceback
@@ -353,14 +403,8 @@ async def handle_analysis(request):
     try:
         symbol = request.match_info.get('symbol', '').upper()
         
-        print(f"\n[ANALYSIS REQUEST] Symbol: {symbol}")
-        print(f"[CACHE CONTENTS] Available: {list(market_cache.keys())}")
-        
         if symbol not in market_cache:
-            print(f"❌ {symbol} NOT FOUND in cache")
-            return web.json_response({'error': f'{symbol} not found in cache. Available: {list(market_cache.keys())}'}, status=404)
-        
-        print(f"✅ {symbol} found in cache, generating analysis...")
+            return web.json_response({'error': f'{symbol} not found'}, status=404)
         
         market_data = market_cache[symbol]
         
@@ -407,7 +451,6 @@ async def handle_analysis(request):
             'interpretation': interpretation
         }
         
-        print(f"✅ Analysis generated for {symbol}")
         return web.json_response(analysis)
     except Exception as e:
         print(f"[ERROR] Analysis handler: {e}")
@@ -455,7 +498,7 @@ app.router.add_get('/', handle_health)
 
 if __name__ == '__main__':
     print('\n' + '='*80)
-    print('✨ ORACLEX V2.5+ - INSTITUTIONAL BACKEND (DEBUG MODE)')
+    print('✨ ORACLEX V2.5+ - INSTITUTIONAL BACKEND (WITH VALIDATION)')
     print('='*80)
     print('🚀 Listening on port 8080')
     print('📊 Endpoints:')
